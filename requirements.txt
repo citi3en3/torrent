@@ -1,0 +1,7 @@
+# Runtime
+libtorrent==2.0.13
+PySide6-Essentials==6.10.1
+
+# Build / test
+pyinstaller>=6.21.0
+pytest>=9.0
