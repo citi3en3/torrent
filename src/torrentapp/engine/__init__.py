@@ -7,7 +7,9 @@ alert-handling logic testable in isolation from the widgets that display it.
 
 from .events import (
     EngineEvent,
+    ListenPortChanged,
     MetadataReceived,
+    NetworkStatus,
     SessionMessage,
     TorrentAdded,
     TorrentFailed,
@@ -21,7 +23,9 @@ from .torrent import TorrentItem, hash_string
 
 __all__ = [
     "EngineEvent",
+    "ListenPortChanged",
     "MetadataReceived",
+    "NetworkStatus",
     "ResumeStore",
     "SessionMessage",
     "TorrentAdded",

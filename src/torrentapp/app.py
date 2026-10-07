@@ -90,6 +90,8 @@ class Application:
 
         self.engine = TorrentEngine(self.config, ResumeStore())
         self.engine.start()
+        if self.engine.port_changed:
+            self.config.save()
         self.engine.restore_torrents()
 
         self.bridge = EngineBridge(self.engine)

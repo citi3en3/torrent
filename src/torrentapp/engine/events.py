@@ -54,6 +54,23 @@ class TorrentFailed(EngineEvent):
 
 
 @dataclass(frozen=True)
+class ListenPortChanged(EngineEvent):
+    """The engine moved to a new port; the config should be persisted."""
+
+    port: int
+
+
+@dataclass(frozen=True)
+class NetworkStatus(EngineEvent):
+    """Session-wide connectivity, published about once a second."""
+
+    listening: bool
+    port: int
+    dht_nodes: int
+    peers: int
+
+
+@dataclass(frozen=True)
 class SessionMessage(EngineEvent):
     level: str  # "info" | "warning" | "error"
     message: str

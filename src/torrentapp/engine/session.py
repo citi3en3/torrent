@@ -16,6 +16,8 @@ Design notes worth keeping in mind when editing this file:
 from __future__ import annotations
 
 import logging
+import random
+import socket
 import time
 from pathlib import Path
 
@@ -64,6 +66,53 @@ ALERT_MASK = int(
 
 # How many one-second ticks between periodic resume-data checkpoints.
 RESUME_INTERVAL_TICKS = 60
+
+# Windows' dynamic port range is 49152-65535. Hyper-V / WSL / WinNAT reserve
+# random blocks of it at every boot, so a port there that worked yesterday can be
+# "access denied" today -- and libtorrent only falls back from "address in use",
+# not from that, leaving the session with no sockets and zero peers. So we never
+# keep a port in that range, even one that happens to bind right now.
+DYNAMIC_PORT_START = 49152
+SAFE_PORT_RANGE = (10000, DYNAMIC_PORT_START - 1)
+
+# Ticks between checks that the session still has at least one listen socket.
+WATCHDOG_INTERVAL_TICKS = 10
+
+
+def port_is_bindable(port: int) -> bool:
+    """True if both TCP and UDP can bind ``port`` on all interfaces."""
+    for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+        probe = socket.socket(socket.AF_INET, kind)
+        try:
+            probe.bind(("0.0.0.0", int(port)))
+        except OSError:
+            return False
+        finally:
+            probe.close()
+    return True
+
+
+def choose_listen_port(
+    preferred: int, avoid: set[int] | frozenset[int] = frozenset(), attempts: int = 50
+) -> int:
+    """``preferred`` if usable, otherwise a random usable port in SAFE_PORT_RANGE.
+
+    "Usable" means bindable now *and* outside the dynamic range, so it stays
+    usable after a reboot. ``avoid`` excludes ports known to have just failed.
+    """
+    preferred = int(preferred)
+    if (
+        preferred not in avoid
+        and 1024 <= preferred < DYNAMIC_PORT_START
+        and port_is_bindable(preferred)
+    ):
+        return preferred
+    for _ in range(attempts):
+        candidate = random.randint(*SAFE_PORT_RANGE)
+        if candidate not in avoid and port_is_bindable(candidate):
+            return candidate
+    # Nothing worked; let libtorrent try and report the failure itself.
+    return int(preferred)
 
 
 def build_settings(config: Config) -> dict:
@@ -172,6 +221,9 @@ class TorrentEngine:
         self._items: dict[str, TorrentItem] = {}
         self._awaiting_resume: set[str] = set()
         self._ticks = 0
+        # Set when start() had to move off the configured port; the caller
+        # persists the config so the new port (and its UPnP mapping) sticks.
+        self.port_changed = False
         self._handlers = {
             "add_torrent_alert": self._on_add_torrent,
             "state_update_alert": self._on_state_update,
@@ -201,6 +253,16 @@ class TorrentEngine:
     def start(self) -> None:
         if self._session is not None:
             return
+        port = choose_listen_port(self.config.listen_port)
+        if port != self.config.listen_port:
+            log.warning(
+                "port %s cannot be bound (in use or reserved by Windows); "
+                "switching to %s",
+                self.config.listen_port,
+                port,
+            )
+            self.config.listen_port = port
+            self.port_changed = True
         settings = build_settings(self.config)
         session = lt.session(settings)
 
@@ -222,7 +284,12 @@ class TorrentEngine:
             bound = session.listen_port()
         except Exception:  # noqa: BLE001
             bound = self.config.listen_port
-        if bound != self.config.listen_port:
+        if not bound:
+            log.error(
+                "no listen socket on port %s -- trackers, DHT and peers will not work",
+                self.config.listen_port,
+            )
+        elif bound != self.config.listen_port:
             log.warning(
                 "port %s unavailable; listening on %s instead",
                 self.config.listen_port,
