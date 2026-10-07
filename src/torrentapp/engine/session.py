@@ -27,7 +27,9 @@ from ..config import Config
 from ..constants import APP_NAME, APP_VERSION, PEER_ID_PREFIX
 from .events import (
     EngineEvent,
+    ListenPortChanged,
     MetadataReceived,
+    NetworkStatus,
     SessionMessage,
     TorrentAdded,
     TorrentFailed,
@@ -221,10 +223,12 @@ class TorrentEngine:
         self._items: dict[str, TorrentItem] = {}
         self._awaiting_resume: set[str] = set()
         self._ticks = 0
-        # Set when start() had to move off the configured port; the caller
-        # persists the config so the new port (and its UPnP mapping) sticks.
-        self.port_changed = False
+        # Events raised outside alert handling (port moves); flushed by poll().
+        self._pending: list[EngineEvent] = []
+        # So a port nothing can fix is reported once, not every watchdog pass.
+        self._offline_reported = False
         self._handlers = {
+            "session_stats_alert": self._on_session_stats,
             "add_torrent_alert": self._on_add_torrent,
             "state_update_alert": self._on_state_update,
             "metadata_received_alert": self._on_metadata,
@@ -255,14 +259,7 @@ class TorrentEngine:
             return
         port = choose_listen_port(self.config.listen_port)
         if port != self.config.listen_port:
-            log.warning(
-                "port %s cannot be bound (in use or reserved by Windows); "
-                "switching to %s",
-                self.config.listen_port,
-                port,
-            )
-            self.config.listen_port = port
-            self.port_changed = True
+            self._move_port(port, "cannot be bound or is in Windows' reservable range")
         settings = build_settings(self.config)
         session = lt.session(settings)
 
@@ -285,10 +282,8 @@ class TorrentEngine:
         except Exception:  # noqa: BLE001
             bound = self.config.listen_port
         if not bound:
-            log.error(
-                "no listen socket on port %s -- trackers, DHT and peers will not work",
-                self.config.listen_port,
-            )
+            # Lost the race between our bind probe and libtorrent's own bind.
+            self.check_listening()
         elif bound != self.config.listen_port:
             log.warning(
                 "port %s unavailable; listening on %s instead",
@@ -365,15 +360,58 @@ class TorrentEngine:
         if self._session is None:
             return
         self._session.post_torrent_updates()
+        self._session.post_session_stats()
         self._ticks += 1
         if self._ticks % RESUME_INTERVAL_TICKS == 0:
             self.request_resume_all()
+        if self._ticks % WATCHDOG_INTERVAL_TICKS == 0:
+            self.check_listening()
+
+    def check_listening(self) -> bool:
+        """Re-bind on a fresh port if the session has lost every listen socket.
+
+        Without a socket libtorrent cannot announce, run DHT or connect to
+        anyone, yet nothing errors -- torrents just sit at zero peers. Returns
+        True if a move to a new port was made.
+        """
+        session = self.session
+        if session.is_listening():
+            if self._offline_reported:
+                log.info("listening again on port %s", session.listen_port())
+            self._offline_reported = False
+            return False
+
+        failed = int(self.config.listen_port)
+        port = choose_listen_port(failed, avoid={failed})
+        if port == failed:
+            if not self._offline_reported:
+                self._offline_reported = True
+                message = (
+                    f"Not connected: port {failed} cannot be opened and no free "
+                    "port was found. Downloads are stalled."
+                )
+                log.error(message)
+                self._pending.append(SessionMessage("error", message))
+            return False
+
+        self._move_port(port, "lost its listen socket")
+        session.apply_settings(build_settings(self.config))
+        self._pending.append(
+            SessionMessage("warning", f"Network port {failed} failed; moved to {port}")
+        )
+        return True
+
+    def _move_port(self, port: int, reason: str) -> None:
+        log.warning("port %s %s; switching to %s", self.config.listen_port, reason, port)
+        self.config.listen_port = int(port)
+        self._pending.append(ListenPortChanged(int(port)))
 
     def poll(self) -> list[EngineEvent]:
         """Drain the alert queue and return normalised events."""
         if self._session is None:
             return []
-        events: list[EngineEvent] = []
+        events: list[EngineEvent] = self._pending
+        self._pending = []
         for alert in self._session.pop_alerts():
             handler = self._handlers.get(type(alert).__name__)
             if handler is None:
@@ -518,6 +556,18 @@ class TorrentEngine:
             )
         # Checkpoint immediately: a crash seconds after adding should not lose it.
         self.request_resume(info_hash, force=True)
+
+    def _on_session_stats(self, alert, events: list[EngineEvent]) -> None:
+        values = alert.values
+        session = self.session
+        events.append(
+            NetworkStatus(
+                listening=bool(session.is_listening()),
+                port=int(session.listen_port()),
+                dht_nodes=int(values.get("dht.dht_nodes", 0)),
+                peers=int(values.get("peer.num_peers_connected", 0)),
+            )
+        )
 
     def _on_state_update(self, alert, events: list[EngineEvent]) -> None:
         updated: list[TorrentItem] = []

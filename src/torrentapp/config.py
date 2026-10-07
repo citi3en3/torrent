@@ -25,9 +25,9 @@ log = logging.getLogger(__name__)
 # drive from the entire existing library.
 DEFAULT_DOWNLOAD_ROOT = r"A:\DOWNLOADS"
 
-# Reusing qBittorrent's listen port: it is already proven through the router and
-# the Windows firewall, so inbound connections work from the first launch.
-DEFAULT_LISTEN_PORT = 58361
+# Must stay below 49152: Windows' dynamic range, where Hyper-V / WSL reserve
+# random port blocks at every boot (qBittorrent's old 58361 was lost that way).
+DEFAULT_LISTEN_PORT = 37258
 
 
 @dataclass

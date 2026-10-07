@@ -90,11 +90,12 @@ class Application:
 
         self.engine = TorrentEngine(self.config, ResumeStore())
         self.engine.start()
-        if self.engine.port_changed:
-            self.config.save()
         self.engine.restore_torrents()
 
         self.bridge = EngineBridge(self.engine)
+        # Persist a port move at once: the next launch, and the router's UPnP
+        # mapping, should use the port that works, even after a crash.
+        self.bridge.listen_port_changed.connect(self._on_listen_port_changed)
         self.window = MainWindow(self.bridge, self.config, self.icon)
 
         self.tray = TrayIcon(self.icon)
@@ -137,6 +138,12 @@ class Application:
         up = sum(i.upload_rate for i in items)
         active = sum(1 for i in items if i.is_active and not i.finished)
         self.tray.set_rates(down, up, active)
+
+    def _on_listen_port_changed(self, port: int) -> None:
+        try:
+            self.config.save()
+        except OSError as exc:
+            log.warning("could not save new listen port %s: %s", port, exc)
 
     def _show_window(self) -> None:
         self.window.show()

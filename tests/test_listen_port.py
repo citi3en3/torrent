@@ -122,6 +122,9 @@ def test_watchdog_rebinds_when_all_sockets_are_lost(engine: TorrentEngine) -> No
     # Knock the session off the network the way a Windows port reservation
     # does: point it at a port it cannot bind, with no system fallback.
     blocker_tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # Without this, Windows lets libtorrent's SO_REUSEADDR share the port.
+    if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+        blocker_tcp.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
     blocker_tcp.bind(("0.0.0.0", 0))
     blocker_tcp.listen()
     blocked = blocker_tcp.getsockname()[1]

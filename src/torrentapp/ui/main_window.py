@@ -48,12 +48,13 @@ from .. import shell_integration
 from ..bridge import EngineBridge
 from ..config import Config
 from ..constants import APP_DISPLAY_NAME, PROGID
-from ..engine import TorrentItem
+from ..engine import NetworkStatus, TorrentItem
 from ..engine.migrate import find_backup_dir, import_candidates, scan
 from ..engine.session import params_from_file, params_from_magnet, params_hash
 from ..util import format_rate
 from .add_dialog import AddTorrentDialog, source_from_torrent_info
 from .migrate_dialog import MigrationDialog
+from .theme import COLORS
 from .models import (
     COLUMN_KEYS,
     DEFAULT_WIDTHS,
@@ -71,6 +72,23 @@ FILTER_GROUPS = (
     ("Paused", "paused"),
     ("Errored", "error"),
 )
+
+
+def describe_network(status: NetworkStatus, dht_enabled: bool) -> tuple[str, str, str]:
+    """Status-bar text, a COLORS key and a tooltip for session connectivity."""
+    if not status.listening:
+        return (
+            "⚠ Not connected",
+            "error",
+            "No network port could be opened, so trackers, DHT and peers are "
+            "unreachable. The app keeps retrying on a new port.",
+        )
+    summary = f"Port {status.port} · {status.peers} peers"
+    if dht_enabled:
+        summary += f" · DHT {status.dht_nodes}"
+        if status.dht_nodes == 0:
+            return summary, "warning", "Listening, but DHT has not found any nodes yet."
+    return summary, "fg_dim", f"Listening on port {status.port}."
 
 
 class MainWindow(QMainWindow):
@@ -116,6 +134,10 @@ class MainWindow(QMainWindow):
         self.setStatusBar(QStatusBar())
         self._status_label = QLabel("Starting…")
         self.statusBar().addWidget(self._status_label)
+        # Always visible: a session without a listen socket looks exactly like
+        # "no seeders" otherwise, which is how a dead port once went unnoticed.
+        self._net_label = QLabel("Connecting…")
+        self.statusBar().addPermanentWidget(self._net_label)
 
     def _build_toolbar(self) -> QToolBar:
         bar = QToolBar("Main")
@@ -222,6 +244,7 @@ class MainWindow(QMainWindow):
         self._bridge.torrent_finished.connect(self._on_finished)
         self._bridge.torrent_failed.connect(self._on_failed)
         self._bridge.message.connect(self._on_message)
+        self._bridge.network_status.connect(self._on_network_status)
 
     def _restore_geometry(self) -> None:
         if self._config.window_geometry:
@@ -254,6 +277,12 @@ class MainWindow(QMainWindow):
     def _on_failed(self, info_hash: str, message: str) -> None:
         self.statusBar().showMessage(f"Error: {message}", 10000)
         log.warning("torrent error (%s): %s", info_hash, message)
+
+    def _on_network_status(self, status: NetworkStatus) -> None:
+        text, level, tooltip = describe_network(status, self._config.enable_dht)
+        self._net_label.setText(text)
+        self._net_label.setToolTip(tooltip)
+        self._net_label.setStyleSheet(f"color: {COLORS[level]};")
 
     def _on_message(self, level: str, message: str) -> None:
         self.statusBar().showMessage(message, 8000)

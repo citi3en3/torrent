@@ -18,7 +18,9 @@ import logging
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from .engine import (
+    ListenPortChanged,
     MetadataReceived,
+    NetworkStatus,
     SessionMessage,
     TorrentAdded,
     TorrentEngine,
@@ -42,6 +44,8 @@ class EngineBridge(QObject):
     torrent_removed = Signal(str)  # info_hash
     torrent_failed = Signal(str, str)  # info_hash, message
     message = Signal(str, str)  # level, text
+    network_status = Signal(object)  # NetworkStatus
+    listen_port_changed = Signal(int)  # port
 
     def __init__(self, engine: TorrentEngine, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -97,3 +101,7 @@ class EngineBridge(QObject):
                 self.torrent_failed.emit(event.info_hash, event.message)
             elif isinstance(event, SessionMessage):
                 self.message.emit(event.level, event.message)
+            elif isinstance(event, NetworkStatus):
+                self.network_status.emit(event)
+            elif isinstance(event, ListenPortChanged):
+                self.listen_port_changed.emit(event.port)

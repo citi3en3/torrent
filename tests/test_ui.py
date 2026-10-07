@@ -238,3 +238,35 @@ def test_add_dialog_handles_metadata_free_source(config):
     decision = dialog.decision()
     assert decision.file_priorities == [], "no per-file choices to express"
     assert decision.save_path
+
+
+# --------------------------------------------------------------------------- network
+
+
+def test_network_indicator_flags_a_dead_session():
+    from torrentapp.engine import NetworkStatus
+    from torrentapp.ui.main_window import describe_network
+
+    text, level, _ = describe_network(NetworkStatus(False, 0, 0, 0), True)
+    assert level == "error"
+    assert "Not connected" in text
+
+
+def test_network_indicator_warns_while_dht_is_empty():
+    from torrentapp.engine import NetworkStatus
+    from torrentapp.ui.main_window import describe_network
+
+    _, level, _ = describe_network(NetworkStatus(True, 37258, 0, 0), True)
+    assert level == "warning"
+    text, level, _ = describe_network(NetworkStatus(True, 37258, 0, 0), False)
+    assert level == "fg_dim"
+    assert "37258" in text
+
+
+def test_network_indicator_healthy():
+    from torrentapp.engine import NetworkStatus
+    from torrentapp.ui.main_window import describe_network
+
+    text, level, _ = describe_network(NetworkStatus(True, 37258, 48, 15), True)
+    assert level == "fg_dim"
+    assert "15 peers" in text and "DHT 48" in text
